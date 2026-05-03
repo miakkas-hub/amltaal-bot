@@ -1,0 +1,216 @@
+import os
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+
+BOT_TOKEN = os.getenv("8506359179:AAGyn9Qrzp_d5mepCvyzEQVhFIlKm_7VVmg")
+
+observations = []
+next_obs_id = 1
+
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 لوحة التحكم", callback_data="dashboard")],
+        [InlineKeyboardButton("📝 ملاحظة جديدة", callback_data="new_obs")],
+        [InlineKeyboardButton("📋 الملاحظات المفتوحة", callback_data="open_obs")],
+        [InlineKeyboardButton("⏱️ حالة SLA", callback_data="sla")],
+        [InlineKeyboardButton("❓ المساعدة", callback_data="help")],
+    ])
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    welcome = f"""👋 أهلاً {user.first_name}!
+
+🎯 <b>امتثال+</b> - منصة الالتزام التنظيمي
+
+📊 إدارة الملاحظات الرقابية
+📝 متابعة طلبات SAMA
+⏱️ مراقبة SLA
+
+اختر من القائمة:"""
+    await update.message.reply_text(welcome, parse_mode="HTML", reply_markup=main_menu())
+
+async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    total = len(observations)
+    open_obs = len([o for o in observations if o["status"] != "مغلقة"])
+    overdue = len([o for o in observations if o.get("overdue", False)])
+    critical = len([o for o in observations if o["priority"] == "🔴 حرج" and o["status"] != "مغلقة"])
+    
+    text = f"""📊 <b>لوحة التحكم</b>
+
+┌────────────────────────┐
+│ 📋 الملاحظات: {total:<8} │
+│ 🔓 المفتوحة: {open_obs:<8} │
+│ 🔴 الحرجة: {critical:<8} │
+│ ⏰ المتأخرة: {overdue:<8} │
+└────────────────────────┘
+
+📅 {datetime.now().strftime("%Y-%m-%d %H:%M")}"""
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=main_menu())
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu())
+
+async def new_observation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global next_obs_id
+    text = update.message.text.replace("/new_observation", "").strip()
+    
+    if not text:
+        await update.message.reply_text(
+            "📝 <b>إضافة ملاحظة جديدة</b>\n\n"
+            "الاستخدام:\n"
+            "<code>/new_observation عنوان الملاحظة | الأولوية | الإدارة</code>\n\n"
+            "مثال:\n"
+            "<code>/new_observation نقص في إجراءات AML | عالي | إدارة المخاطر</code>\n\n"
+            "الأولويات: حرج، عالي، متوسط، منخفض",
+            parse_mode="HTML"
+        )
+        return
+    
+    parts = [p.strip() for p in text.split("|")]
+    title = parts[0] if len(parts) > 0 else text
+    priority = parts[1] if len(parts) > 1 else "متوسط"
+    dept = parts[2] if len(parts) > 2 else "غير محدد"
+    
+    priority_map = {"حرج": "🔴 حرج", "عالي": "🟠 عالي", "متوسط": "🟡 متوسط", "منخفض": "🟢 منخفض"}
+    priority_emoji = priority_map.get(priority, "🟡 متوسط")
+    
+    obs = {
+        "id": next_obs_id,
+        "number": f"OBS-2025-{next_obs_id:04d}",
+        "title": title,
+        "priority": priority_emoji,
+        "department": dept,
+        "status": "🔓 مفتوحة",
+        "created": datetime.now(),
+        "target_date": datetime.now() + timedelta(days=14),
+        "overdue": False,
+    }
+    
+    observations.append(obs)
+    next_obs_id += 1
+    
+    await update.message.reply_text(
+        f"✅ <b>تم إنشاء الملاحظة!</b>\n\n"
+        f"📋 الرقم: <code>{obs['number']}</code>\n"
+        f"📌 {title}\n"
+        f"🎯 الأولوية: {priority_emoji}\n"
+        f"🏢 الإدارة: {dept}\n"
+        f"📅 الهدف: {obs['target_date'].strftime('%Y-%m-%d')}",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+async def open_points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    open_obs = [o for o in observations if o["status"] != "مغلقة"]
+    
+    if not open_obs:
+        text = "✅ لا توجد ملاحظات مفتوحة!"
+    else:
+        text = f"📋 <b>الملاحظات المفتوحة ({len(open_obs)})</b>\n\n"
+        for obs in open_obs[:10]:
+            overdue_text = " ⏰" if obs.get("overdue") else ""
+            text += f"{obs['priority']} <b>{obs['number']}</b>{overdue_text}\n{obs['title'][:50]}\n🏢 {obs['department']} | 📅 {obs['target_date'].strftime('%Y-%m-%d')}\n\n"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=main_menu())
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu())
+
+async def sla_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    open_obs = [o for o in observations if o["status"] != "مغلقة"]
+    now = datetime.now()
+    for obs in open_obs:
+        obs["overdue"] = now > obs["target_date"]
+    
+    overdue = [o for o in open_obs if o.get("overdue")]
+    total = len(open_obs)
+    on_time = total - len(overdue)
+    rate = (on_time / max(total, 1)) * 100
+    
+    text = f"""⏱️ <b>حالة SLA</b>
+
+📊 الإحصائيات:
+• الإجمالي: {total}
+• في الموعد: {on_time}
+• المتأخر: {len(overdue)}
+• نسبة الالتزام: <b>{rate:.1f}%</b>
+
+⚠️ المتأخرات:
+"""
+    for obs in overdue[:5]:
+        days = (now - obs["target_date"]).days
+        text += f"• {obs['number']} - متأخر {days} يوم\n"
+    
+    if not overdue:
+        text += "✅ لا يوجد متأخرات!"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=main_menu())
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu())
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = """❓ <b>دليل استخدام امتثال+</b>
+
+📋 <b>الأوامر:</b>
+/start - البداية
+/dashboard - لوحة التحكم
+/new_observation - إضافة ملاحظة
+/open_points - الملاحظات المفتوحة
+/sla - حالة SLA
+/help - هذا الدليل
+
+📝 <b>إضافة ملاحظة:</b>
+<code>/new_observation العنوان | الأولوية | الإدارة</code>
+
+مثال:
+<code>/new_observation نقص AML | عالي | المخاطر</code>"""
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text, parse_mode="HTML", reply_markup=main_menu())
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=main_menu())
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "dashboard":
+        await dashboard(update, context)
+    elif data == "new_obs":
+        await query.edit_message_text(
+            "📝 لإضافة ملاحظة جديدة، اكتب:\n\n"
+            "<code>/new_observation العنوان | الأولوية | الإدارة</code>\n\n"
+            "مثال:\n"
+            "<code>/new_observation نقص في إجراءات AML | عالي | إدارة المخاطر</code>",
+            parse_mode="HTML",
+            reply_markup=main_menu()
+        )
+    elif data == "open_obs":
+        await open_points(update, context)
+    elif data == "sla":
+        await sla_status(update, context)
+    elif data == "help":
+        await help_command(update, context)
+
+def main():
+    print("🚀 امتثال+ - بوت الالتزام التنظيمي")
+    print("اضغط Ctrl+C للإيقاف")
+    
+    app = Application.builder().token(BOT_TOKEN).build()
+    
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("dashboard", dashboard))
+    app.add_handler(CommandHandler("new_observation", new_observation))
+    app.add_handler(CommandHandler("open_points", open_points))
+    app.add_handler(CommandHandler("sla", sla_status))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
